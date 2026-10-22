@@ -1,0 +1,73 @@
+import boto3
+import os
+from datetime import datetime, timezone, timedelta
+
+ec2 = boto3.client('ec2')
+sns = boto3.client('sns')
+
+SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+
+def lambda_handler(event, context):
+
+    findings = []
+
+    # --------------------------------------------------
+    # Check for Unattached EBS Volumes
+    # --------------------------------------------------
+    volumes = ec2.describe_volumes(
+        Filters=[
+            {
+                'Name': 'status',
+                'Values': ['available']
+            }
+        ]
+    )
+
+    for volume in volumes['Volumes']:
+
+        findings.append(
+            f"[UNUSED VOLUME]\n"
+            f"Volume ID: {volume['VolumeId']}\n"
+            f"Size: {volume['Size']} GB\n"
+        )
+
+    # --------------------------------------------------
+    # Check for EBS Snapshots Older Than 90 Days
+    # --------------------------------------------------
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+
+    snapshots = ec2.describe_snapshots(
+        OwnerIds=['self']
+    )
+
+    for snapshot in snapshots['Snapshots']:
+
+        if snapshot['StartTime'] < cutoff_date:
+
+            findings.append(
+                f"[OLD SNAPSHOT]\n"
+                f"Snapshot ID: {snapshot['SnapshotId']}\n"
+                f"Created On: {snapshot['StartTime']}\n"
+                f"Volume Size: {snapshot['VolumeSize']} GB\n"
+            )
+
+    # --------------------------------------------------
+    # Publish SNS Notification
+    # --------------------------------------------------
+    if findings:
+
+        message = "\n------------------------\n".join(findings)
+
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject='AWS Stale Resource Report',
+            Message=message
+        )
+
+    return {
+        'stale_resources_found': len(findings)
+    }
+
+
+
+
